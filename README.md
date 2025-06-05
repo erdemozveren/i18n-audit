@@ -3,7 +3,7 @@
 **🛠️ A CLI tool for auditing, converting, and managing i18n translation files with CSV.**
 Supports converting between translation JSON/JS files and CSV, detecting unused or variable-based keys, and generating actionable reports.
 
-## It depends on [ripgrep](https://github.com/BurntSushi/ripgrep) to find occurances in your project
+### It depends on [ripgrep](https://github.com/BurntSushi/ripgrep) to find translation key occurances in your project
 
 ## 💡 Why This Tool Exists
 
