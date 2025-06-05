@@ -78,7 +78,7 @@ function escapeRegexForRipgrep(regex) {
     .slice(1, -1)              // remove leading and trailing slashes
 }
 
-const variableKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*([^`'"])(?<key>.*)\1\s*(?=[,)])/);
+const variableKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(?!['"`])(?<key>[^'"`][^)]*?)\s*(?=[,)])/);
 const interpolationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*`(?<key>[^`]+)`/);
 const concatinationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*(?<key>(?:'[^']*'|"[^"]*")\s*\+\s*[a-zA-Z_]\w*)/);
 const stringKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(['"])(?<key>(?:\\.|(?!\1).)*?)\1\s*(?=[,)])/);
@@ -89,11 +89,7 @@ function findRelative(output, finds, flattenLocals) {
     if (!output.find(oldOut => oldOut.key === key)) {
       let value = flattenLocals.find(l => l[0] === key) || '';
       if (typeof value === 'object') value = value[1];
-      if (args['with-source']) {
-        output.push({ source: `${file}:${line}:${col}`, key, value });
-      } else {
-        output.push({ key, value });
-      }
+      output.push({ source: `${file}:${line}:${col}`, key, value });
     }
   });
   return output;
@@ -109,7 +105,6 @@ function printHelp() {
     { arg: '--print', input: '"all" or "attention"', desc: 'print only given option', required: 'No', default: 'attention' },
     { arg: '--write', input: '', desc: 'Write output(s) to disk', required: 'No', default: 'False' },
     { arg: '--no-attention', input: '', desc: 'Don\'t output attention.csv for manual checks', required: 'No', default: 'False' },
-    { arg: '--with-source', input: '', desc: 'add \'source\' column of keys in format of path:line:col', required: 'No', default: 'False' },
   ]
   const fnames = [localOutputPath, attentionOutputPath, csvToJsonPath].map(e => path.basename(e)).join(', ');
   console.log(`
@@ -172,14 +167,17 @@ async function main() {
   rgArgs.push('$key')
   const simpleUsed = [];
   const dynamics = [];
-  const noTranslation = []
-  const strings = await search(stringKeys, rgArgs);
-  const vars = await search(variableKeys, rgArgs);
-  const inters = await search(interpolationKeys, rgArgs);
-  const concats = await search(concatinationKeys, rgArgs);
-  findRelative(simpleUsed, strings, flattenLocals);
-  findRelative(dynamics, inters, flattenLocals);
-  findRelative(dynamics, concats, flattenLocals);
+  const notUsed = []
+  const searchStrings = await search(stringKeys, rgArgs);
+  const searchVars = await search(variableKeys, rgArgs);
+  const searchInterpolations = await search(interpolationKeys, rgArgs);
+  const searchConcats = await search(concatinationKeys, rgArgs);
+  findRelative(simpleUsed, searchStrings, flattenLocals);
+  dynamics.push({ key: '#i18n# --BELOW IS VARIABLES-- #i18n#' })
+  findRelative(dynamics, searchVars, flattenLocals);
+  dynamics.push({ key: '#i18n# --BELOW IS INTERPOLATIONS/Concatinations-- #i18n#' })
+  findRelative(dynamics, searchInterpolations, flattenLocals);
+  findRelative(dynamics, searchConcats, flattenLocals);
   flattenLocals.forEach(([key, value]) => {
     if (!simpleUsed.find(e => e.key === key)) {
       let similar = '';
@@ -190,32 +188,32 @@ async function main() {
           similar = dynamicLocal.key;
         }
       });
-      if (args['with-source']) {
-        noTranslation.push({ value, similar });
-      } else {
-        noTranslation.push({ key, value, similar });
-      }
+      notUsed.push({ key, value, similar });
     }
   });
-  let needAttentions = noTranslation;
+  let needAttentions = [];
+  function addToAttention(elements) {
+    elements.forEach(e => {
+      const { source, key, value, similar } = e;
+      needAttentions.push({ key, value, similar, source });
+    })
+  }
+  addToAttention(dynamics);
+  needAttentions.push({ key: '#i18n# --BELOW IS HAVE TRANSLATION BUT UNUSED-- #i18n#' })
+  addToAttention(notUsed);
   if (args['attention'] !== false) {
+    dynamics.push({ key: '#i18n# --BELOW IS USED BUT DO NOT HAVE TRANSLATION-- #i18n#' })
     simpleUsed.forEach(e => {
       if (typeof _.get(originalLocals, e.key) === 'undefined') {
-        needAttentions.unshift(e);
+        needAttentions.push(e);
       }
     })
   }
-  needAttentions = [...vars, ...dynamics, ...needAttentions];
   if (!args.print && !args.write) { args.print = "attention"; }
   if (args.print) {
     let attentionAsTable;
-    if (args['with-source']) {
-      attentionAsTable = needAttentions.map(e => [e.source, e.key, e.value, e.similar]);
-      attentionAsTable.unshift(['Source', 'Key', 'Value', 'Similar Used Match']);
-    } else {
-      attentionAsTable = needAttentions.map(e => [e.key, e.value, e.similar]);
-      attentionAsTable.unshift(['Key', 'Value', 'Similar Used Match']);
-    }
+    attentionAsTable = needAttentions.map(e => [e.key, e.value, e.similar, e.source]);
+    attentionAsTable.unshift(['Key', 'Value', 'Similar Used Match', 'Source']);
     console.log(table(attentionAsTable, {
       columnDefault: {
         width: 30,
@@ -224,10 +222,10 @@ async function main() {
     }))
   }
   if (args.write) {
-    fs.writeFileSync(localOutputPath, 'key,value\n' + json2csv(flattenLocals, { prependHeader: false }), 'utf-8')
+    fs.writeFileSync(localOutputPath, 'key,value\n' + json2csv(flattenLocals, { prependHeader: false, emptyFieldValue: '' }), 'utf-8')
     console.log('File Saved : ' + localOutputPath);
     if (args['attention'] !== false) {
-      fs.writeFileSync(attentionOutputPath, json2csv(needAttentions), 'utf-8')
+      fs.writeFileSync(attentionOutputPath, json2csv(needAttentions, { emptyFieldValue: '', keys: ['key', 'value', 'similar', 'source'] }), 'utf-8')
       console.log('File Saved : ' + attentionOutputPath);
     }
   }

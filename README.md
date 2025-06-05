@@ -3,7 +3,7 @@
 **🛠️ A CLI tool for auditing, converting, and managing i18n translation files with CSV.**
 Supports converting between translation JSON/JS files and CSV, detecting unused or variable-based keys, and generating actionable reports.
 
----
+## It depends on [ripgrep](https://github.com/BurntSushi/ripgrep) to find occurances in your project
 
 ## 💡 Why This Tool Exists
 
@@ -38,7 +38,7 @@ Always verify results manually when in doubt.
 - ✅ Revert `.csv` back to translation `.json`
 - ✅ Detect **unused**, **undefined**, or **variable-based** keys
 - ✅ Generates an **"attention" report** for manual inspection
-- ✅ Optional inclusion of source references (file\:line\:col)
+- ✅ source references (file\:line\:col)
 
 ---
 
@@ -91,13 +91,12 @@ This tool **will always overwrite** the following files in the current directory
 
 ## 🧩 Options
 
-| Argument         | Accepts                 | Description                                                          | Required | Default       |
-| ---------------- | ----------------------- | -------------------------------------------------------------------- | -------- | ------------- |
-| `-i`             | File path               | Input file (`.json`, `.js`, or `.csv`)                               | ✅       | —             |
-| `--print`        | `"all"` / `"attention"` | Print only the specified CSV to stdout                               | ❌       | `"attention"` |
-| `--write`        | —                       | Write output(s) to disk (instead of only printing)                   | ❌       | `false`       |
-| `--no-attention` | —                       | Skip generating `attention.csv`                                      | ❌       | `false`       |
-| `--with-source`  | —                       | Add source location (path\:line\:column) for each key (if available) | ❌       | `false`       |
+| Argument         | Accepts                 | Description                                        | Required | Default       |
+| ---------------- | ----------------------- | -------------------------------------------------- | -------- | ------------- |
+| `-i`             | File path               | Input file (`.json`, `.js`, or `.csv`)             | ✅       | —             |
+| `--print`        | `"all"` / `"attention"` | Print only the specified CSV to stdout             | ❌       | `"attention"` |
+| `--write`        | —                       | Write output(s) to disk (instead of only printing) | ❌       | `false`       |
+| `--no-attention` | —                       | Skip generating `attention.csv`                    | ❌       | `false`       |
 
 ---
 
