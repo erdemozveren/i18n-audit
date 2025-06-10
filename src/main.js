@@ -1,19 +1,47 @@
 import path from 'path';
 import { pathToFileURL } from 'url';
-import argvParser from 'minimist';
 import { spawn } from 'child_process';
 import { json2csv, csv2json } from 'json-2-csv';
 import fs from 'fs';
 import scompare from "string-comparison"
 import _ from 'lodash';
-import { table } from 'table';
+import { bulkTranslate } from './translate';
+import { program } from 'commander';
+import { toHTML } from './htmlFormatter';
 const sim = scompare.lcs.similarity;
 
-const args = argvParser(process.argv.slice(2), {
-  alias: {
-    h: 'help'
-  }
-});
+
+const variableKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(?!['"`])(?<key>[^'"`][^)]*?)\s*(?=[,)])/);
+const interpolationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*`(?<key>[^`]+)`/);
+const concatinationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*(?<key>(?:'[^']*'|"[^"]*")\s*\+\s*[a-zA-Z_]\w*)/);
+const stringKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(['"])(?<key>(?:\\.|(?!\1).)*?)\1\s*(?=[,)])/);
+
+
+program
+  .name('i18n-audit')
+  .description('Convert i18n JSON <-> CSV, detect unused and undefined translations, and translate between languages.')
+  .version('1.1.0')
+  // Required input file (json or csv)
+  .requiredOption('-i, --input <file>', 'Input file (.json, .js, or .csv)')
+  // Optional output file
+  .option('-o, --output <file>', 'Output file path (defaults to stdout)')
+  // Convert to JSON or CSV
+  .option('--to <format>', 'Convert to "csv" or "json" (based on input)', 'csv')
+  // Translate mode (works only with CSV)
+  .option('-t, --translate <from-to>', 'Translate using source-target languages (e.g., en-tr)')
+  // Audit for undefiend/unused keys
+  .option('--audit', 'Audit for undefined and unused keys in translation files')
+  // Optional target directory for recursive audit
+  .option('--src <dir>', 'Source code directory to scan for used keys', '.')
+  // LibreTranslate Api Url
+  .option('--api-url <url>', 'Optional translation API endpoint (LibreTranslate)', 'http://localhost:5000')
+  .option('--api-key <key>', 'Optional API key for the translation service')
+  .option('--chunk-size <n>', 'Number of entries per API request batch (default: 10)', parseInt)
+  .option('--chunk-delay <ms>', 'Delay between each chunk in milliseconds (default: 500)', parseInt)
+
+program.parse();
+
+const opts = program.opts();
 
 function search(searchPattern, options = [], searchPath = '.') {
   return new Promise((resolve, reject) => {
@@ -51,22 +79,51 @@ function search(searchPattern, options = [], searchPath = '.') {
   });
 }
 
+
 function flattenToDotNotation(obj, prefix = '') {
+  // If it's a primitive, just return it as-is
+  if (!_.isObject(obj)) {
+    return [{ key: prefix, value: obj }];
+  }
+
   return _.flatMap(obj, (value, key) => {
-    const fullKey = prefix ? `${prefix}.${key}` : key;
-    if (_.isPlainObject(value)) {
-      return flattenToDotNotation(value, fullKey);
-    } else {
-      return [[fullKey, value]];
-    }
+    const fullKey = Array.isArray(obj)
+      ? `${prefix}[${key}]`
+      : prefix
+        ? `${prefix}.${key}`
+        : key;
+
+    return flattenToDotNotation(value, fullKey);
   });
 }
 
 function unflattenFromDotNotation(pairs) {
   const result = {};
 
-  for (const { key, value } of pairs) {
-    _.set(result, key, value);
+  for (const { key: flatKey, value } of pairs) {
+    // Split keys using "." and "[]" (dot and bracket notation)
+    const keys = flatKey.split(/\.|\[|\]/).filter(Boolean);
+
+    let current = result;
+
+    for (let i = 0; i < keys.length; i++) {
+      const rawKey = keys[i];
+      const isIndex = /^\d+$/.test(rawKey);
+      const key = isIndex ? Number(rawKey) : rawKey;
+      const isLast = i === keys.length - 1;
+
+      if (isLast) {
+        current[key] = value;
+      } else {
+        if (current[key] == null) {
+          const nextKey = keys[i + 1];
+          const nextIsIndex = /^\d+$/.test(nextKey);
+          current[key] = nextIsIndex ? [] : {};
+        }
+
+        current = current[key];
+      }
+    }
   }
 
   return result;
@@ -78,107 +135,45 @@ function escapeRegexForRipgrep(regex) {
     .slice(1, -1)              // remove leading and trailing slashes
 }
 
-const variableKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(?!['"`])(?<key>[^'"`][^)]*?)\s*(?=[,)])/);
-const interpolationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*`(?<key>[^`]+)`/);
-const concatinationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*(?<key>(?:'[^']*'|"[^"]*")\s*\+\s*[a-zA-Z_]\w*)/);
-const stringKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(['"])(?<key>(?:\\.|(?!\1).)*?)\1\s*(?=[,)])/);
-
-function findRelative(output, finds, flattenLocals) {
+function findUsed(output, finds, localsAsJson, status) {
   finds.forEach(e => {
     const { match: key, file, line, col } = e;
-    if (!output.find(oldOut => oldOut.key === key)) {
-      let value = flattenLocals.find(l => l[0] === key) || '';
-      if (typeof value === 'object') value = value[1];
-      output.push({ source: `${file}:${line}:${col}`, key, value });
+    const langValue = _.get(localsAsJson, key);
+    if (!langValue) {
+      output.push({ source: `${file}:${line}:${col}`, key, value: langValue || '', status });
     }
   });
   return output;
 }
-const binName = 'i18n-audit';
-const savePath = process.cwd();
-const attentionOutputPath = path.join(savePath, 'localization-needs-attention.csv');
-const localOutputPath = path.join(savePath, 'localization-all.csv');
-const csvToJsonPath = path.join(savePath, 'localization-from-csv.json');
-function printHelp() {
-  const argList = [
-    { arg: '-i', input: 'file path', desc: 'Input file to process can be js,json or csv depending on process', required: 'Yes', default: 'None' },
-    { arg: '--print', input: '"all" or "attention"', desc: 'print only given option', required: 'No', default: 'attention' },
-    { arg: '--write', input: '', desc: 'Write output(s) to disk', required: 'No', default: 'False' },
-    { arg: '--no-attention', input: '', desc: 'Don\'t output attention.csv for manual checks', required: 'No', default: 'False' },
-  ]
-  const fnames = [localOutputPath, attentionOutputPath, csvToJsonPath].map(e => path.basename(e)).join(', ');
-  console.log(`
-example usage;
-  - npx ${binName} -i translationfile.{js,json}
-      --> outputs flatten csv and 'attention csv' that lists variable
-          dependant and uncovered keys that may needs manual checks
-  - npx ${binName} -i transaltions.csv
-      --> converts csv dot notaion key,value pairs to i18n translation
-          json (basically reverts)
-  ----------------------------------------------------------
-  Notice: This tool always overwrite to these files on running directory!
-          File names : ${fnames}
-`)
-  const argListToRows = Object.values(argList).map(e => ([e.arg, e.input, e.desc, e.required, e.default]));
-  argListToRows.unshift(['Arg', 'Accepts', 'Desc', 'Required', 'Default']);
-  console.log(table(argListToRows, {
-    columnDefault: {
-      width: 15,
-    },
-    columns: [
-      { width: 15 },
-      { width: 20 },
-      { width: 30, wrapWord: true },
-      { width: 5 },
-      { width: 5 },
-    ]
-  }));
-}
-async function main() {
-  if (!args.i || args.help) {
-    printHelp();
-    process.exit()
-  }
-  const inputPath = path.resolve(args.i);
-  let originalLocals = {}, flattenLocals = [];
-  if (args.i.endsWith('.csv')) {
-    // revert to original scheme (unflatten)
-    console.log('Reverting to json scheme')
-    const csvToJson = csv2json(fs.readFileSync(inputPath, 'utf-8'));
-    const revertedLocals = unflattenFromDotNotation(csvToJson);
-    fs.writeFileSync(csvToJsonPath, JSON.stringify(revertedLocals, null, 2), 'utf-8');
-    console.log('File saved to : ' + csvToJsonPath)
-    return;
-  }
-  if (args.i.endsWith('.js')) {
-    originalLocals = (await import(pathToFileURL(inputPath))).default;
-  }
-  if (args.i.endsWith('.json')) {
-    originalLocals = JSON.parse(fs.readFileSync(inputPath, 'utf-8'));
-  }
-  if (Object.keys(originalLocals).length === 0) {
-    console.error('Translation file is empty,exiting.')
-    process.exit(1);
-  }
-  flattenLocals = flattenToDotNotation(originalLocals);
 
-  const rgArgs = ['-o', '-g', '!**/i18n/**'];
-  rgArgs.push('-r')
-  rgArgs.push('$key')
+async function loadTranslationFile(filePath) {
+  const ext = filePath.split('.').pop();
+  if (ext === 'json') {
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+  } else if (ext === 'js') {
+    const mod = await import(pathToFileURL(filePath));
+    return mod.default || mod;
+  } else if (ext === 'csv') {
+    const csvToJson = csv2json(fs.readFileSync(filePath, 'utf-8'));
+    return unflattenFromDotNotation(csvToJson);
+  }
+  throw new Error('Unsupported file type: ' + ext);
+}
+
+async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
+  const rgArgs = ['-o', '-g', '!' + inputPath, '-r', '$key', '--sort', 'path'];
   const simpleUsed = [];
   const dynamics = [];
   const notUsed = []
-  const searchStrings = await search(stringKeys, rgArgs);
-  const searchVars = await search(variableKeys, rgArgs);
-  const searchInterpolations = await search(interpolationKeys, rgArgs);
-  const searchConcats = await search(concatinationKeys, rgArgs);
-  findRelative(simpleUsed, searchStrings, flattenLocals);
-  dynamics.push({ key: '#i18n# --BELOW IS VARIABLES-- #i18n#' })
-  findRelative(dynamics, searchVars, flattenLocals);
-  dynamics.push({ key: '#i18n# --BELOW IS INTERPOLATIONS/Concatinations-- #i18n#' })
-  findRelative(dynamics, searchInterpolations, flattenLocals);
-  findRelative(dynamics, searchConcats, flattenLocals);
-  flattenLocals.forEach(([key, value]) => {
+  const searchStrings = await search(stringKeys, rgArgs, searchPath);
+  const searchVars = await search(variableKeys, rgArgs, searchPath);
+  const searchInterpolations = await search(interpolationKeys, rgArgs, searchPath);
+  const searchConcats = await search(concatinationKeys, rgArgs, searchPath);
+  findUsed(simpleUsed, searchStrings, jsonLocals, 'USED');
+  findUsed(dynamics, searchVars, jsonLocals, 'VARIABLE');
+  findUsed(dynamics, searchInterpolations, jsonLocals, 'DYNAMIC');
+  findUsed(dynamics, searchConcats, jsonLocals, 'DYNAMIC');
+  flattenLocals.forEach(({ key, value }) => {
     if (!simpleUsed.find(e => e.key === key)) {
       let similar = '';
       let simScore = -Infinity;
@@ -188,48 +183,108 @@ async function main() {
           similar = dynamicLocal.key;
         }
       });
-      notUsed.push({ key, value, similar });
+      notUsed.push({ key, value, status: 'UNUSED', similar });
     }
   });
-  let needAttentions = [];
-  function addToAttention(elements) {
-    elements.forEach(e => {
-      const { source, key, value, similar } = e;
-      needAttentions.push({ key, value, similar, source });
-    })
+  let audit = [];
+  simpleUsed.forEach(e => {
+    if (typeof _.get(jsonLocals, e.key) === 'undefined') {
+      audit.push({ ...e, status: 'UNDEFINED' });
+    }
+  })
+  dynamics.forEach(e => {
+    const { source, key, value, similar, status } = e;
+    audit.push({ key, value, status, similar, source });
+  })
+  notUsed.forEach(e => {
+    const { source, key, value, similar, status } = e;
+    audit.push({ key, value, status, similar, source });
+  })
+  return audit;
+}
+
+async function main() {
+  const resolvedInputPath = path.resolve(opts.input);
+  if (!fs.existsSync(resolvedInputPath)) {
+    program.error('Input file is not exists');
   }
-  addToAttention(dynamics);
-  needAttentions.push({ key: '#i18n# --BELOW IS HAVE TRANSLATION BUT UNUSED-- #i18n#' })
-  addToAttention(notUsed);
-  if (args['attention'] !== false) {
-    dynamics.push({ key: '#i18n# --BELOW IS USED BUT DO NOT HAVE TRANSLATION-- #i18n#' })
-    simpleUsed.forEach(e => {
-      if (typeof _.get(originalLocals, e.key) === 'undefined') {
-        needAttentions.push(e);
+  const inputExt = resolvedInputPath.split('.').pop();
+  // General checks
+  if (inputExt === opts.to && !opts.translate) {
+    program.error('Input and output file type is can not be the same,Unless translation option is used!')
+  }
+  if (opts.translate && opts.audit) {
+    program.error('You cannot use --translate and --audit options together!');
+  }
+  // input content always converted to unflatten json format
+  const inputAsJson = await loadTranslationFile(resolvedInputPath);
+  let outputContent = null;
+  if (opts.audit) {
+    // Audit logic using:
+    // - opts.input (e.g., en.json)
+    // - opts.src (e.g., ./src/) to find used keys
+    const flattenLocals = flattenToDotNotation(inputAsJson);
+    outputContent = await generateAudit(opts.input, opts.src, inputAsJson, flattenLocals)
+  } else if (opts.translate) {
+    const [sourceLang, toLang] = opts.translate.split('-');
+    if (!sourceLang || !toLang) program.error('Translate option must be in format source-target e.g. en-tr');
+    const inputAsRows = flattenToDotNotation(inputAsJson);
+    outputContent = await bulkTranslate(inputAsRows, {
+      sourceLang,
+      toLang,
+      apiUrl: opts.apiUrl,
+      apiKey: opts.apiKey,
+      chunkDelay: opts.chunkDelay,
+      chunkSize: opts.chunkSize,
+    });
+    outputContent = unflattenFromDotNotation(outputContent);
+  }
+  if (outputContent === null) {
+    // its just format convertion
+    outputContent = inputAsJson;
+  }
+  const auditKeys = ['status', 'key', 'value', 'similar', 'source'];
+  // This is last stage,make outputContent ready to write
+  if (opts.to === 'csv') {
+    // Convert JSON/JS to CSV
+    if (opts.translate || opts.audit) {
+      if (opts.audit) {
+        outputContent = json2csv(outputContent, { emptyFieldValue: '', keys: auditKeys });
+      } else {
+        outputContent = json2csv(outputContent, { emptyFieldValue: '' });
       }
-    })
-  }
-  if (!args.print && !args.write) { args.print = "attention"; }
-  if (args.print) {
-    let attentionAsTable;
-    attentionAsTable = needAttentions.map(e => [e.key, e.value, e.similar, e.source]);
-    attentionAsTable.unshift(['Key', 'Value', 'Similar Used Match', 'Source']);
-    console.log(table(attentionAsTable, {
-      columnDefault: {
-        width: 30,
-        truncate: 70,
-      },
-    }))
-  }
-  if (args.write) {
-    fs.writeFileSync(localOutputPath, 'key,value\n' + json2csv(flattenLocals, { prependHeader: false, emptyFieldValue: '' }), 'utf-8')
-    console.log('File Saved : ' + localOutputPath);
-    if (args['attention'] !== false) {
-      fs.writeFileSync(attentionOutputPath, json2csv(needAttentions, { emptyFieldValue: '', keys: ['key', 'value', 'similar', 'source'] }), 'utf-8')
-      console.log('File Saved : ' + attentionOutputPath);
+    } else {
+      // its just format convertion
+      outputContent = flattenToDotNotation(inputAsJson);
+      outputContent = json2csv(outputContent, { emptyFieldValue: '' });
+    }
+  } else if (opts.to === 'json') {
+    outputContent = JSON.stringify(outputContent, null, 2);
+  } else if (opts.to === 'html') {
+    if (opts.audit) {
+      outputContent = toHTML(outputContent, auditKeys)
+    } else {
+      if (!Array.isArray(outputContent)) {
+        outputContent = flattenToDotNotation(outputContent);
+      }
+      outputContent = toHTML(outputContent, ['key', 'value'])
     }
   }
-  console.log('done!')
+
+  if (typeof outputContent !== 'string') {
+    console.log('Something went wrong! Dumping some info');
+    console.log('output type', typeof outputContent)
+    console.log('args', opts)
+    process.exit(1);
+  }
+  if (opts.output) {
+    fs.writeFileSync(opts.output, outputContent, 'utf-8');
+    console.log('File saved to : ' + opts.output)
+  } else {
+    process.stdout.write(outputContent);
+  }
 }
+
+
 main();
 
