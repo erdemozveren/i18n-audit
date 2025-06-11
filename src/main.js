@@ -47,6 +47,7 @@ function search(searchPattern, options = [], searchPath = '.') {
   return new Promise((resolve, reject) => {
     const rgargs = ['--vimgrep', '--pcre2', ...options, searchPattern, searchPath];
     const rg = spawn('rg', rgargs);
+    // console.log('searching : ', 'rg ' + rgargs.map(e => e.indexOf(' ') === -1 ? e : JSON.stringify(e)).join(' '))
 
     let results = [];
 
@@ -139,11 +140,18 @@ function findUsed(output, finds, localsAsJson, status) {
   finds.forEach(e => {
     const { match: key, file, line, col } = e;
     const langValue = _.get(localsAsJson, key);
-    if (!langValue) {
+    if (langValue) {
       output.push({ source: `${file}:${line}:${col}`, key, value: langValue || '', status });
     }
   });
   return output;
+}
+
+function searchToList(output, finds, status) {
+  finds.forEach(e => {
+    const { match: key, file, line, col } = e;
+    output.push({ source: `${file}:${line}:${col}`, key, value: '', status });
+  });
 }
 
 async function loadTranslationFile(filePath) {
@@ -170,9 +178,22 @@ async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
   const searchInterpolations = await search(interpolationKeys, rgArgs, searchPath);
   const searchConcats = await search(concatinationKeys, rgArgs, searchPath);
   findUsed(simpleUsed, searchStrings, jsonLocals, 'USED');
-  findUsed(dynamics, searchVars, jsonLocals, 'VARIABLE');
-  findUsed(dynamics, searchInterpolations, jsonLocals, 'DYNAMIC');
-  findUsed(dynamics, searchConcats, jsonLocals, 'DYNAMIC');
+  searchToList(dynamics, searchVars, 'VARIABLE');
+  searchToList(dynamics, searchInterpolations, 'DYNAMIC');
+  searchToList(dynamics, searchConcats, 'DYNAMIC');
+  // Find similar keys that could be resolved in dynamic
+  dynamics.forEach(e => {
+    if (e.status !== 'VARIABLE') {
+      let simScore = -Infinity;
+      flattenLocals.find(({ key }) => {
+        const elementScore = sim(key, e.key);
+        if (elementScore > simScore && elementScore > 0.5) {
+          e.similar = key;
+        }
+      });
+    }
+  })
+  // Find dynamic usage of key
   flattenLocals.forEach(({ key, value }) => {
     if (!simpleUsed.find(e => e.key === key)) {
       let similar = '';

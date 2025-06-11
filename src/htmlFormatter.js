@@ -18,7 +18,7 @@ const auditInfo = `
 <li><div class="marker dynamic"></div><span class="marker-tag">DYNAMIC</span> Key <strong>concatenated / interpolated</strong> in JS, needs <strong>manual check</strong>.</li>
 <li><div class="marker unused"></div><span class="marker-tag">UNUSED</span> Key has translation but <strong>not found</strong> in source.</li>
 </ul>
-<p><small><strong>Note:</strong> The <strong>Similar</strong> column shows keys with similar usage in the source. This can be helpful for identifying dynamic keys, which may otherwise be marked as unused.</small></p>
+<p><small><strong>Note:</strong> The <strong>Similar</strong> column shows keys with similar usage in the source and vica versa for dynamics. This can be helpful for identifying dynamic keys, which may otherwise be marked as unused.</small></p>
 `
 export function toHTML(rows, headers) {
   if (!rows.length) return '<p>No data</p>';
