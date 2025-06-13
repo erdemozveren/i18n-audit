@@ -89,7 +89,8 @@ Options:
   --to <format>              Convert to "csv" or "json" (based on input) (default: "csv")
   -t, --translate <from-to>  Translate using source-target languages (e.g., en-tr)
   --audit                    Audit for undefined and unused keys in translation files
-  --src <dir>                Source code directory to scan for used keys (default: ".")
+  --src <dir...>             Source code directory to scan for used keys (can be used multiple times) (default: ["."])
+  --loose                    Search for loosely-matched strings (quoted text not inside $t or other i18n calls)
   --api-url <url>            Optional translation API endpoint (LibreTranslate) (default: "http://localhost:5000")
   --api-key <key>            Optional API key for the translation service
   --chunk-size <n>           Number of entries per API request batch (default: 10)
