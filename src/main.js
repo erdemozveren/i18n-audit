@@ -15,6 +15,7 @@ const variableKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(?!['"`])(?<key
 const interpolationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*`(?<key>[^`]+)`/);
 const concatinationKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\(\s*(?<key>(?:'[^']*'|"[^"]*")\s*\+\s*[a-zA-Z_]\w*)/);
 const stringKeys = escapeRegexForRipgrep(/(?:\$|\.|\s)t\s*\(\s*(['"])(?<key>(?:\\.|(?!\1).)*?)\1\s*(?=[,)])/);
+const looseKeys = escapeRegexForRipgrep(/\s*(['"])(?<key>(?:\\.|(?!\1).)*?)\1\s*/);
 
 
 program
@@ -32,7 +33,9 @@ program
   // Audit for undefiend/unused keys
   .option('--audit', 'Audit for undefined and unused keys in translation files')
   // Optional target directory for recursive audit
-  .option('--src <dir>', 'Source code directory to scan for used keys', '.')
+  .option('--src <dir...>', 'Source code directory to scan for used keys (can be used multiple times)', ['.'])
+  // Optional loose search
+  .option('--loose', 'Search for loosely-matched strings (quoted text not inside $t or other i18n calls)')
   // LibreTranslate Api Url
   .option('--api-url <url>', 'Optional translation API endpoint (LibreTranslate)', 'http://localhost:5000')
   .option('--api-key <key>', 'Optional API key for the translation service')
@@ -43,9 +46,9 @@ program.parse();
 
 const opts = program.opts();
 
-function search(searchPattern, options = [], searchPath = '.') {
+function search(searchPattern, options = [], searchPath = ['.']) {
   return new Promise((resolve, reject) => {
-    const rgargs = ['--vimgrep', '--pcre2', ...options, searchPattern, searchPath];
+    const rgargs = ['--vimgrep', '--pcre2', ...options, searchPattern, ...searchPath];
     const rg = spawn('rg', rgargs);
     // console.log('searching : ', 'rg ' + rgargs.map(e => e.indexOf(' ') === -1 ? e : JSON.stringify(e)).join(' '))
 
@@ -168,7 +171,7 @@ async function loadTranslationFile(filePath) {
   throw new Error('Unsupported file type: ' + ext);
 }
 
-async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
+async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals, looseSearch = false) {
   const rgArgs = ['-o', '-g', '!' + inputPath, '-r', '$key', '--sort', 'path'];
   const simpleUsed = [];
   const dynamics = [];
@@ -177,7 +180,13 @@ async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
   const searchVars = await search(variableKeys, rgArgs, searchPath);
   const searchInterpolations = await search(interpolationKeys, rgArgs, searchPath);
   const searchConcats = await search(concatinationKeys, rgArgs, searchPath);
-  findUsed(simpleUsed, searchStrings, jsonLocals, 'USED');
+  if (looseSearch) {
+    const looseStrings = await search(looseKeys, rgArgs, searchPath);
+    findUsed(simpleUsed, looseStrings, jsonLocals, 'USED');
+    console.log(simpleUsed.find(e => e.key === 'date.relativeTime'))
+  } else {
+    findUsed(simpleUsed, searchStrings, jsonLocals, 'USED');
+  }
   searchToList(dynamics, searchVars, 'VARIABLE');
   searchToList(dynamics, searchInterpolations, 'DYNAMIC');
   searchToList(dynamics, searchConcats, 'DYNAMIC');
@@ -192,7 +201,7 @@ async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
         }
       });
     }
-  })
+  });
   // Find dynamic usage of key
   flattenLocals.forEach(({ key, value }) => {
     if (!simpleUsed.find(e => e.key === key)) {
@@ -224,6 +233,7 @@ async function generateAudit(inputPath, searchPath, jsonLocals, flattenLocals) {
   return audit;
 }
 
+
 async function main() {
   const resolvedInputPath = path.resolve(opts.input);
   if (!fs.existsSync(resolvedInputPath)) {
@@ -240,12 +250,13 @@ async function main() {
   // input content always converted to unflatten json format
   const inputAsJson = await loadTranslationFile(resolvedInputPath);
   let outputContent = null;
+
   if (opts.audit) {
+    const flattenLocals = flattenToDotNotation(inputAsJson);
     // Audit logic using:
     // - opts.input (e.g., en.json)
     // - opts.src (e.g., ./src/) to find used keys
-    const flattenLocals = flattenToDotNotation(inputAsJson);
-    outputContent = await generateAudit(opts.input, opts.src, inputAsJson, flattenLocals)
+    outputContent = await generateAudit(opts.input, opts.src, inputAsJson, flattenLocals, opts.loose)
   } else if (opts.translate) {
     const [sourceLang, toLang] = opts.translate.split('-');
     if (!sourceLang || !toLang) program.error('Translate option must be in format source-target e.g. en-tr');
