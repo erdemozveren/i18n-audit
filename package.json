@@ -1,13 +1,19 @@
 {
   "name": "i18n-audit",
-  "version": "1.2.2",
-  "main": "./src/index.js",
+  "version": "1.2.3",
   "bin": {
-    "i18n-audit": "src/index.js"
+    "i18n-audit": "dist/bin.js"
   },
   "repositoy": "github:erdemozveren/i18n-audit",
+  "files": [
+    "dist/bin.js",
+    "README.md",
+    "LICENSE.md"
+  ],
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "build": "esbuild src/index.js --platform=node --minify --bundle --target=node18 --outfile=dist/bin.js --banner:js=\"#!/usr/bin/env node\"",
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "i18n",
@@ -29,7 +35,12 @@
   },
   "devDependencies": {
     "@eslint/js": "^9.28.0",
+    "esbuild": "0.25.5",
     "eslint": "^9.28.0",
     "globals": "^16.2.0"
+  },
+  "engines": {
+    "node": ">=18.0.0 <21",
+    "npm": ">=9"
   }
 }
