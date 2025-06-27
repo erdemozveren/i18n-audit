@@ -21,7 +21,7 @@ const looseKeys = escapeRegexForRipgrep(/(['"])(?<key>(?:\\.|(?!\1).)*?)\1/);
 program
   .name('i18n-audit')
   .description('Convert i18n JSON <-> CSV, detect unused and undefined translations, and translate between languages.')
-  .version('1.2.3')
+  .version('1.2.4')
   // Required input file (json or csv)
   .requiredOption('-i, --input <file>', 'Input file (.json, .js, or .csv)')
   // Optional output file

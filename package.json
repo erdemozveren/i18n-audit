@@ -1,6 +1,6 @@
 {
   "name": "i18n-audit",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "bin": {
     "i18n-audit": "dist/bin.js"
   },
@@ -27,7 +27,6 @@
   "description": "Convert i18n JSON <-> CSV, detect unused and undefined translations, and translate between languages.",
   "dependencies": {
     "commander": "^12.0.0",
-    "esm": "^3.2.25",
     "json-2-csv": "^5.5.9",
     "lodash": "^4.17.21",
     "ora": "^5.4.1",
